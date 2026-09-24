@@ -191,7 +191,11 @@
 
   var apiBase  = (getParam(['api']) || '').replace(/\/+$/, ''); // 后端地址（默认同域）
   var videoId  = getParam(['id']);                               // 接口模式：视频 ID
+  var shortId  = getParam(['i']);                               // Liblib 直链短码：owner/sha（省略固定前缀）
   var videoUrl = decodeUrl(getParam(['url', 'u', 'v']) || '');
+  if (!videoUrl && shortId) {
+    videoUrl = 'https://liblibai-online.liblib.cloud/img/' + shortId.replace(/[^A-Za-z0-9/_]/g, '') + '.mp4';
+  }
   var title    = getParam(['title', 't']) || '';
   var nextUrl  = decodeUrl(getParam(['next', 'n']) || '');
   var wmText   = getParam(['wm', 'watermark']) || '';
