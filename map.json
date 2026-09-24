@@ -34,19 +34,5 @@
       }
     ],
     "notice": []
-  },
-  "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee": {
-    "url": "https://example.com/t.mp4",
-    "title": "e2e自动写map",
-    "buttons": [
-      {
-        "title": "B1",
-        "url": "https://example.com/b1",
-        "pos": "bar"
-      }
-    ],
-    "notice": [
-      "免责声明测试"
-    ]
   }
 }
