@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,minimum-scale=1,user-scalable=no,minimal-ui">
+  <!-- 关键：禁止携带 Referer，绕过大部分源站的防盗链检测 -->
+  <meta name="referrer" content="no-referrer">
+  <title>视频播放</title>
+  <style>
+    html, body {
+      width: 100%; height: 100%; margin: 0; overflow: hidden;
+      background: #000;
+      display: flex; flex-direction: column;
+    }
+    #mse { flex: auto; width: 100%; }
+    /* 顶部标题栏 */
+    #topbar {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 9999;
+      padding: 8px 14px;
+      font: 14px/1.4 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: #fff;
+      background: linear-gradient(to bottom, rgba(0,0,0,.55), transparent);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      pointer-events: none;
+      opacity: 0; transition: opacity .3s;
+    }
+    body.show-ui #topbar { opacity: 1; }
+    /* 错误遮罩 */
+    #err {
+      position: fixed; inset: 0; z-index: 10000;
+      display: none; flex-direction: column; align-items: center; justify-content: center;
+      gap: 12px; color: #eee; font: 14px/1.6 sans-serif; text-align: center; padding: 20px;
+    }
+    #err .retry {
+      padding: 8px 22px; border: none; border-radius: 6px; cursor: pointer;
+      background: #1890ff; color: #fff; font-size: 14px;
+    }
+    /* 静态水印 */
+    .wm-static {
+      position: fixed; inset: 0; z-index: 9998; pointer-events: none;
+      background-repeat: repeat !important;
+    }
+    /* 弹幕式移动水印 */
+    .wm-move {
+      position: fixed; z-index: 9998; pointer-events: none;
+      color: rgba(255,255,255,.55); font: bold 18px sans-serif;
+      white-space: nowrap; text-shadow: 0 0 2px rgba(0,0,0,.6);
+      will-change: left, top;
+    }
+    /* 下一集提示 */
+    #next-tip {
+      position: fixed; right: 16px; bottom: 90px; z-index: 10001;
+      display: none; padding: 10px 18px; border-radius: 8px;
+      background: rgba(0,0,0,.75); color: #fff; font: 14px sans-serif;
+      cursor: pointer; border: 1px solid rgba(255,255,255,.2);
+    }
+    /* ===== 底部自定义按钮栏 ===== */
+    #btnbar {
+      position: fixed; bottom: 0; left: 0; right: 0; z-index: 9997;
+      display: flex; flex-direction: column; gap: 6px;
+      padding: 8px 10px; box-sizing: border-box;
+      background: rgba(12,12,14,.92);
+    }
+    #btnbar .vbtn {
+      height: 44px; line-height: 44px; border: none; cursor: pointer;
+      border-radius: 8px; text-align: center;
+      font: 600 15px/44px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: #fff; letter-spacing: .5px;
+      background: linear-gradient(135deg, #ff5f6d, #ff8a5c);
+      box-shadow: 0 2px 8px rgba(255,95,109,.35);
+      transition: transform .15s, filter .15s;
+      -webkit-tap-highlight-color: transparent;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    #btnbar .vbtn:active { transform: scale(.98); filter: brightness(1.12); }
+    /* ===== 播放器内悬浮按钮 ===== */
+    #pbtns {
+      position: fixed; right: 12px; bottom: 72px; z-index: 9997;
+      display: flex; flex-direction: column; gap: 8px; align-items: flex-end;
+    }
+    #pbtns .pbtn {
+      padding: 6px 14px; border-radius: 999px; cursor: pointer;
+      background: rgba(0,0,0,.62); color: #fff; border: 1px solid rgba(255,255,255,.25);
+      font: 600 13px/1.4 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+      backdrop-filter: blur(4px);
+      -webkit-tap-highlight-color: transparent;
+      max-width: 60vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    #pbtns .pbtn:active { background: rgba(255,95,109,.75); }
+    /* ===== 开播确认页（封面） ===== */
+    #cover {
+      position: fixed; inset: 0; z-index: 10002;
+      display: none; flex-direction: column; align-items: center; justify-content: center;
+      background: linear-gradient(180deg, #101b36 0%, #0b1226 100%);
+      transition: opacity .35s;
+    }
+    #cover.hide { opacity: 0; pointer-events: none; }
+    .cover-thumb {
+      position: relative; width: 168px; height: 96px; border-radius: 12px; overflow: hidden;
+      background: #000; box-shadow: 0 8px 28px rgba(0,0,0,.55);
+    }
+    .cover-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .cover-thumb .ph {
+      position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+      font-size: 32px; color: #fff; background: linear-gradient(135deg,#1c2a4a,#101a30);
+    }
+    .cover-thumb .tag {
+      position: absolute; left: 6px; top: 6px; padding: 1px 7px; border-radius: 5px;
+      background: rgba(0,0,0,.55); color: #fff; font: 11px/1.6 sans-serif;
+    }
+    .cover-hint {
+      margin-top: 16px; color: #fff;
+      font: 600 16px/1.4 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    #startBtn {
+      margin-top: 14px; width: 172px; height: 44px; border: none; border-radius: 22px; cursor: pointer;
+      background: linear-gradient(135deg, #37e2ff, #2f7bff);
+      color: #fff; letter-spacing: 2px;
+      font: 600 15px/44px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+      box-shadow: 0 6px 22px rgba(47,123,255,.45);
+      -webkit-tap-highlight-color: transparent;
+      transition: transform .15s;
+    }
+    #startBtn:active { transform: scale(.97); }
+    .cover-notice {
+      margin-top: 18px; padding: 11px 16px; border-radius: 10px; max-width: 80vw; box-sizing: border-box;
+      background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.09);
+    }
+    .cover-notice p { margin: 3px 0; font: 12px/1.7 -apple-system, "PingFang SC", sans-serif; }
+    /* ===== 强制播放器控件常驻（关闭自动隐藏） ===== */
+    .xgplayer-controls.controls-autohide,
+    .xgplayer-inactive .controls-autohide {
+      visibility: visible !important; opacity: 1 !important; pointer-events: auto !important;
+    }
+    .xgplayer-inactive xg-bar { display: block !important; }
+    .xgplayer-inactive { cursor: default !important; }
+  </style>
+  <link rel="stylesheet" href="./assets/xgplayer.css">
+</head>
+
+<body>
+<div id="mse"></div>
+<div id="topbar"></div>
+<div id="err">
+  <div id="err-msg">😢 视频加载失败，可能原因：<br>链接失效 / 源站防盗链 / 格式不支持</div>
+  <button class="retry" onclick="location.reload()">重新加载</button>
+</div>
+<div id="next-tip">▶ 播放下一集</div>
+
+<div id="cover">
+  <div class="cover-thumb">
+    <span class="ph" style="display:flex;align-items:center;justify-content:center;font-size:42px;color:#fff;">▶</span>
+    <span class="tag">视频封面</span>
+  </div>
+  <div class="cover-hint">点击开始播放</div>
+  <button id="startBtn">开 始 播 放</button>
+  <div class="cover-notice" id="coverNotice"></div>
+</div>
+
+<script src="./assets/xgplayer.min.js" charset="utf-8"></script>
+<script src="./assets/hls-plugin.min.js" charset="utf-8"></script>
+<script>
+(function () {
+  'use strict';
+
+  /* ================= 参数解析 ================= */
+  var qs = new URLSearchParams(location.search);
+
+  function getParam(names) {
+    for (var i = 0; i < names.length; i++) {
+      var v = qs.get(names[i]);
+      if (v) return v;
+    }
+    return null;
+  }
+
+  // url 支持四种传法：相对路径 / 明文 URL 编码 / base64 / base64url
+  function decodeUrl(raw) {
+    var t = raw.trim();
+    if (t.charAt(0) === '/') return t; // 站内相对路径（配合后端代理使用）
+    if (!/^https?:\/\//i.test(t)) {
+      try {
+        var b = t.replace(/-/g, '+').replace(/_/g, '/');
+        while (b.length % 4) b += '=';
+        var d = decodeURIComponent(escape(atob(b)));
+        if (/^https?:\/\//i.test(d)) return d;
+      } catch (e) { /* 不是 base64，继续 */ }
+    }
+    return t;
+  }
+
+  var apiBase  = (getParam(['api']) || '').replace(/\/+$/, ''); // 后端地址（默认同域）
+  var videoId  = getParam(['id']);                               // 接口模式：视频 ID
+  var videoUrl = decodeUrl(getParam(['url', 'u', 'v']) || '');
+  var title    = getParam(['title', 't']) || '';
+  var nextUrl  = decodeUrl(getParam(['next', 'n']) || '');
+  var wmText   = getParam(['wm', 'watermark']) || '';
+  var wmType   = (getParam(['wmt']) || 'static').toLowerCase(); // static | move
+  var autoNext = qs.get('autonext') !== '0';
+
+  // 自定义按钮：
+  //   底部栏   btn=按钮名称|跳转链接   （可重复多个）
+  //   播放器内 pbtn=按钮名称|跳转链接  （可重复多个）
+  var buttons = [];   // {title, url, pos:'bar'|'player'}
+  var videoType = ''; // 'hls' | 'file' | '' 由 /api/video/:id 返回，决定要不要挂 HlsJsPlugin
+  var noticeLines = []; // 免责声明（接口模式可自定义，静态模式用默认）
+  var rawDirect = ''; // MP4 源站直连地址（服务器带宽小，大文件直连源站更快；失败回退代理）
+  qs.getAll('btn').forEach(function (s) {
+    var i = s.indexOf('|');
+    if (i > 0 && /^https?:\/\//i.test(s.slice(i + 1))) {
+      buttons.push({ title: s.slice(0, i), url: s.slice(i + 1), pos: 'bar' });
+    }
+  });
+  qs.getAll('pbtn').forEach(function (s) {
+    var i = s.indexOf('|');
+    if (i > 0 && /^https?:\/\//i.test(s.slice(i + 1))) {
+      buttons.push({ title: s.slice(0, i), url: s.slice(i + 1), pos: 'player' });
+    }
+  });
+
+  function showError(msg) {
+    document.getElementById('err-msg').innerHTML = msg;
+    document.getElementById('err').style.display = 'flex';
+  }
+
+  /* ================= UI 显隐 ================= */
+  var uiTimer = null;
+  function showUI() {
+    document.body.classList.add('show-ui');
+    clearTimeout(uiTimer);
+    uiTimer = setTimeout(function () { document.body.classList.remove('show-ui'); }, 3000);
+  }
+  ['touchstart', 'mousemove', 'click'].forEach(function (ev) {
+    window.addEventListener(ev, showUI, { passive: true });
+  });
+  showUI();
+
+  /* ================= 自定义按钮渲染 ================= */
+  /* ================= 统计上报 ================= */
+  // 用 navigator.sendBeacon 优先（页面跳转时不丢），失败退回 fetch
+  function track(path, payload) {
+    if (!videoId) return;
+    try {
+      var url = apiBase + path;
+      var body = JSON.stringify(payload || {});
+      if (navigator.sendBeacon) {
+        var blob = new Blob([body], { type: 'application/json' });
+        if (navigator.sendBeacon(url, blob)) return;
+      }
+      fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body, keepalive: true });
+    } catch (e) { /* 统计失败不影响播放 */ }
+  }
+  function trackView() { track('/api/track/view/' + encodeURIComponent(videoId)); }
+  function trackClick(idx, b) {
+    track('/api/track/click/' + encodeURIComponent(videoId), { idx: idx, label: b.title, url: b.url });
+  }
+
+  function renderButtons() {
+    // 保留原始下标，统计时要按下标对号入座
+    var all = buttons.map(function (b, i) { return { b: b, i: i }; });
+    var barList = all.filter(function (x) { return x.b.pos === 'bar'; });
+    var plyList = all.filter(function (x) { return x.b.pos === 'player'; });
+
+    if (barList.length) {
+      var bar = document.createElement('div');
+      bar.id = 'btnbar';
+      barList.forEach(function (x) {
+        var el = document.createElement('button');
+        el.className = 'vbtn';
+        el.textContent = x.b.title;
+        el.onclick = function () { trackClick(x.i, x.b); location.href = x.b.url; };
+        bar.appendChild(el);
+      });
+      document.body.appendChild(bar);
+      // 底部留白，避免按钮遮住播放器控制条
+      document.body.style.paddingBottom = (barList.length * 50 + 10) + 'px';
+      // 下一集提示上移，避开按钮栏
+      document.getElementById('next-tip').style.bottom = (barList.length * 50 + 20) + 'px';
+    }
+
+    if (plyList.length) {
+      var wrap = document.createElement('div');
+      wrap.id = 'pbtns';
+      plyList.forEach(function (x) {
+        var el = document.createElement('div');
+        el.className = 'pbtn';
+        el.textContent = x.b.title;
+        el.onclick = function () { trackClick(x.i, x.b); location.href = x.b.url; };
+        wrap.appendChild(el);
+      });
+      document.body.appendChild(wrap);
+    }
+  }
+
+  /* ================= 水印 ================= */
+  function addStaticWatermark(text) {
+    var c = document.createElement('canvas');
+    c.width = 300; c.height = 220;
+    var ctx = c.getContext('2d');
+    ctx.font = 'bold 18px Arial';
+    ctx.fillStyle = 'rgba(120,120,120,.35)';
+    ctx.translate(c.width / 2, c.height / 2);
+    ctx.rotate(-20 * Math.PI / 180);
+    ctx.textAlign = 'center';
+    ctx.fillText(text, 0, 0);
+    var d = document.createElement('div');
+    d.className = 'wm-static';
+    d.style.backgroundImage = 'url(' + c.toDataURL() + ')';
+    document.body.appendChild(d);
+  }
+
+  function addMovingWatermark(text) {
+    var el = document.createElement('div');
+    el.className = 'wm-move';
+    el.textContent = text;
+    document.body.appendChild(el);
+    var x = Math.random() * (innerWidth - 120);
+    var y = Math.random() * (innerHeight - 40);
+    var sx = Math.random() > .5 ? 1.4 : -1.4;
+    var sy = Math.random() > .5 ? 1 : -1;
+    (function tick() {
+      x += sx; y += sy;
+      if (x <= 0 || x >= innerWidth - el.offsetWidth) sx = -sx;
+      if (y <= 0 || y >= innerHeight - el.offsetHeight) sy = -sy;
+      el.style.left = x + 'px';
+      el.style.top = y + 'px';
+      requestAnimationFrame(tick);
+    })();
+  }
+
+  /* ================= 记忆播放 ================= */
+  function urlKey() {
+    var h = 0, s = videoUrl;
+    for (var i = 0; i < s.length; i++) { h = (h * 31 + s.charCodeAt(i)) | 0; }
+    return 'vp:' + h;
+  }
+  function savePos(t) {
+    try { localStorage.setItem(urlKey(), Math.floor(t)); } catch (e) {}
+  }
+  function loadPos() {
+    try { return parseInt(localStorage.getItem(urlKey()) || '0', 10) || 0; } catch (e) { return 0; }
+  }
+  function clearPos() {
+    try { localStorage.removeItem(urlKey()); } catch (e) {}
+  }
+
+  /* ================= 开播确认页 ================= */
+  var DEFAULT_NOTICE = [
+    '内容素材均来自朋友投稿',
+    '内容只属娱乐不可完全当真',
+    '如果侵犯权益我们立刻删除',
+    '请尽量以官方渠道为准'
+  ];
+  var NOTICE_COLORS = ['#ff7849', '#ffd93d', '#ff6b9d', '#4da6ff', '#a78bfa', '#34d399'];
+  var NOTICE_ICONS  = ['📢', '🎬', '📢', 'ℹ️', '🔔', '📌'];
+
+  function renderNotice(lines) {
+    var box = document.getElementById('coverNotice');
+    var arr = (lines && lines.length) ? lines : DEFAULT_NOTICE;
+    box.innerHTML = arr.map(function (s, i) {
+      var c = NOTICE_COLORS[i % NOTICE_COLORS.length];
+      return '<p style="color:' + c + '">' + NOTICE_ICONS[i % NOTICE_ICONS.length] + ' ' +
+        s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</p>';
+    }).join('');
+  }
+
+  function showCover() {
+    var cover = document.getElementById('cover');
+    renderNotice(noticeLines);
+    cover.style.display = 'flex';
+    document.getElementById('startBtn').addEventListener('click', startPlay);
+  }
+
+  function startPlay() {
+    var cover = document.getElementById('cover');
+    cover.classList.add('hide');
+    setTimeout(function () { cover.style.display = 'none'; }, 360);
+    boot();
+  }
+
+  /* ================= 初始化播放器 ================= */
+  function boot() {
+    // 优先级：接口返回的 type > URL 后缀 .m3u8 > 走 /api/m3u8/ 代理路径
+    var isHls = videoType === 'hls'
+      ? true
+      : (videoType === 'file' ? false : /\.m3u8(\?|#|$|\/)/i.test(videoUrl) || /\/api\/m3u8\//i.test(videoUrl));
+
+    document.title = title || '视频播放';
+    document.getElementById('topbar').textContent = title || '';
+    if (videoId) trackView();   // 上报一次观看
+    renderButtons();
+    if (wmText) {
+      (wmType === 'move' ? addMovingWatermark : addStaticWatermark)(wmText);
+    }
+
+    var playUrl = rawDirect || videoUrl;   // MP4 优先直连源站（绕开服务器小带宽）
+    var fellBack = false;
+    var player = null;
+
+    function bindEvents(p) {
+      // 恢复上次的播放位置（接近结尾则从头）
+      p.on('playing', function () {
+        var saved = loadPos();
+        if (saved > 10 && saved < p.duration - 15) {
+          p.currentTime = saved;
+        }
+      });
+
+      // 每 5 秒记忆一次进度
+      var lastSave = 0;
+      p.on('timeupdate', function () {
+        var now = p.currentTime | 0;
+        if (now - lastSave >= 5) { lastSave = now; savePos(now); }
+      });
+
+      // 直连失败 → 自动回退走服务器代理
+      p.on('error', function () {
+        if (playUrl !== videoUrl && !fellBack) {
+          fellBack = true;
+          try { p.destroy(); } catch (e) {}
+          player = createPlayer(videoUrl);
+          bindEvents(player);
+          return;
+        }
+        showError('😢 视频加载失败，可能原因：<br>链接失效 / 源站防盗链 / 格式不支持');
+      });
+
+      // 播完：自动下一集
+      p.on('ended', function () {
+        clearPos();
+        if (autoNext && nextUrl) {
+          location.href = nextUrl;
+          return;
+        }
+        if (nextUrl) {
+          var tip = document.getElementById('next-tip');
+          tip.style.display = 'block';
+          tip.onclick = function () { location.href = nextUrl; };
+        }
+      });
+    }
+
+    function createPlayer(url) {
+      return new window.Player({
+        id: 'mse',
+        url: url,
+        isLive: false,
+        autoplay: true,
+        muted: true,            // 静音自动播放（浏览器策略），用户可点音量取消
+        playsinline: true,
+        fluid: true,            // 自适应容器
+        playbackRate: [0.5, 0.75, 1, 1.25, 1.5, 2, 3],
+        download: false,
+        keyShortcut: true,      // 键盘快捷键：空格暂停、方向键快进、↑↓音量
+        inactive: false,        // 关闭控件自动隐藏，进度条/设置常驻显示
+        plugins: isHls ? [window.HlsJsPlugin] : []
+      });
+    }
+
+    try {
+      player = createPlayer(playUrl);
+    } catch (e) {
+      showError('😢 播放器初始化失败');
+      return;
+    }
+    bindEvents(player);
+
+    // 双击视频区域也可以跳下一集（无下一集时无动作）
+    document.getElementById('mse').addEventListener('dblclick', function (e) {
+      if (e.target.tagName === 'VIDEO' && nextUrl && !autoNext) {
+        location.href = nextUrl;
+      }
+    });
+  }
+
+  /* ================= 入口 ================= */
+  if (videoId) {
+    // 接口模式：?id=xxx → 从后端读取 标题 / 按钮 / m3u8
+    fetch(apiBase + '/api/video/' + encodeURIComponent(videoId))
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (!j || j.code !== 1 || !j.data) {
+          showError('⚠️ 链接不存在或已被删除');
+          return;
+        }
+        if (!j.data.status) {
+          showError('⚠️ 链接已被删除，无法访问');
+          return;
+        }
+        videoUrl = apiBase + '/api/m3u8/' + encodeURIComponent(videoId);
+        if (j.data.type === 'hls' || j.data.type === 'file') videoType = j.data.type;
+        // MP4 大文件：服务器出带宽小，直连源站速度远高于经服务器转发
+        if (j.data.type === 'file' && j.data.rawUrl && /^https?:\/\//i.test(j.data.rawUrl)) {
+          rawDirect = j.data.rawUrl;
+        }
+        if (!title && j.data.title) title = j.data.title;
+        if (Array.isArray(j.data.buttons)) {
+          buttons = buttons.concat(j.data.buttons);
+        }
+        if (Array.isArray(j.data.notice)) noticeLines = j.data.notice;
+        showCover();
+      })
+      .catch(function () {
+        showError('⚠️ 无法连接播放接口，请稍后重试');
+      });
+  } else {
+    // 静态模式：?url= 直接播放
+    if (!videoUrl) {
+      // 演示模式：无参数时加载测试视频，方便部署后自检
+      videoUrl = 'https://media.w3.org/2010/05/sintel/trailer.mp4';
+      title = '部署自检演示视频（传 ?url= 或 ?id= 参数即可播放你自己的视频）';
+    }
+    showCover();
+  }
+})();
+</script>
+</body>
+</html>
