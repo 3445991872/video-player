@@ -370,6 +370,9 @@
 
   function showCover() {
     var cover = document.getElementById('cover');
+    // 重试过程中可能已经显示过「同步中」错误层，成功拿到视频后必须收起来，否则会盖住播放页
+    var errEl = document.getElementById('err');
+    if (errEl) errEl.style.display = 'none';
     renderNotice(noticeLines);
     cover.style.display = 'flex';
     document.getElementById('startBtn').addEventListener('click', startPlay);
@@ -480,53 +483,78 @@
   /* ================= 入口 ================= */
   if (videoId) {
     // 静态映射模式：?id=xxx → 读仓库根 map.json 查表播放（GitHub Pages 纯静态也能用）
-    fetch('map.json', { cache: 'no-cache' })
-      .then(function (r) { return r.ok ? r.json() : {}; })
-      .then(function (map) {
-        var entry = map && map[videoId];
-        if (entry && entry.url) {
-          videoUrl = entry.url;
-          if (!title && entry.title) title = entry.title;
-          if (Array.isArray(entry.buttons)) buttons = buttons.concat(entry.buttons);
-          if (entry.type) videoType = entry.type;
-          if (entry.rawUrl && /^https?:\/\//i.test(entry.rawUrl)) rawDirect = entry.rawUrl;
-          if (Array.isArray(entry.notice)) noticeLines = entry.notice;
+    // ⚠️ 刚上传时 GitHub Pages 可能在重建（约 30~120s），CDN 仍返回旧 map.json →
+    //    这里自动带 cache-bust 重试，边重试边提示「正在同步中」，避免用户误以为链接坏了。
+    var idTries = 0, ID_MAX_TRY = 15, ID_RETRY_MS = 8000;
+    function hideErrOverlay() {
+      var e = document.getElementById('err');
+      if (e) e.style.display = 'none';
+    }
+    function playFromEntry(entry) {
+      videoUrl = entry.url;
+      if (!title && entry.title) title = entry.title;
+      if (Array.isArray(entry.buttons)) buttons = buttons.concat(entry.buttons);
+      if (entry.type) videoType = entry.type;
+      if (entry.rawUrl && /^https?:\/\//i.test(entry.rawUrl)) rawDirect = entry.rawUrl;
+      if (Array.isArray(entry.notice)) noticeLines = entry.notice;
+      hideErrOverlay();
+      showCover();
+    }
+    function fallbackBackend() {
+      return fetch(apiBase + '/api/video/' + encodeURIComponent(videoId))
+        .then(function (r) { return r.json(); })
+        .then(function (j) {
+          if (!j || j.code !== 1 || !j.data) {
+            showError('⚠️ 链接不存在或已被删除');
+            return;
+          }
+          if (!j.data.status) {
+            showError('⚠️ 链接已被删除，无法访问');
+            return;
+          }
+          videoUrl = apiBase + '/api/m3u8/' + encodeURIComponent(videoId);
+          if (j.data.type === 'hls' || j.data.type === 'file') videoType = j.data.type;
+          // MP4 大文件：服务器出带宽小，直连源站速度远高于经服务器转发
+          if (j.data.type === 'file' && j.data.rawUrl && /^https?:\/\//i.test(j.data.rawUrl)) {
+            rawDirect = j.data.rawUrl;
+          }
+          if (!title && j.data.title) title = j.data.title;
+          if (Array.isArray(j.data.buttons)) buttons = buttons.concat(j.data.buttons);
+          if (Array.isArray(j.data.notice)) noticeLines = j.data.notice;
+          hideErrOverlay();
           showCover();
-          return;
-        }
-        // 映射里没有，且显式带了 ?api= 后端地址 → 退回后端接口模式
-        if (apiBase) {
-          return fetch(apiBase + '/api/video/' + encodeURIComponent(videoId))
-            .then(function (r) { return r.json(); })
-            .then(function (j) {
-              if (!j || j.code !== 1 || !j.data) {
-                showError('⚠️ 链接不存在或已被删除');
-                return;
-              }
-              if (!j.data.status) {
-                showError('⚠️ 链接已被删除，无法访问');
-                return;
-              }
-              videoUrl = apiBase + '/api/m3u8/' + encodeURIComponent(videoId);
-              if (j.data.type === 'hls' || j.data.type === 'file') videoType = j.data.type;
-              // MP4 大文件：服务器出带宽小，直连源站速度远高于经服务器转发
-              if (j.data.type === 'file' && j.data.rawUrl && /^https?:\/\//i.test(j.data.rawUrl)) {
-                rawDirect = j.data.rawUrl;
-              }
-              if (!title && j.data.title) title = j.data.title;
-              if (Array.isArray(j.data.buttons)) buttons = buttons.concat(j.data.buttons);
-              if (Array.isArray(j.data.notice)) noticeLines = j.data.notice;
-              showCover();
-            })
-            .catch(function () {
-              showError('⚠️ 无法连接播放接口，请稍后重试');
-            });
-        }
-        showError('⚠️ 该 id 不存在或视频已失效（map.json 中查无此 id）');
-      })
-      .catch(function () {
-        showError('⚠️ 无法加载视频映射 map.json，请稍后重试');
-      });
+        })
+        .catch(function () {
+          showError('⚠️ 无法连接播放接口，请稍后重试');
+        });
+    }
+    function loadIdMap() {
+      idTries++;
+      // cache-bust：绕过 GitHub Pages CDN 与浏览器缓存，确保取到最新 map.json
+      fetch('map.json?t=' + Date.now(), { cache: 'no-store' })
+        .then(function (r) { return r.ok ? r.json() : {}; })
+        .then(function (map) {
+          var entry = map && map[videoId];
+          if (entry && entry.url) { playFromEntry(entry); return; }
+          if (idTries < ID_MAX_TRY) {
+            showError('⏳ 视频正在同步中…（刚上传时 GitHub 约需 1~2 分钟，已自动重试 ' + idTries + '/' + ID_MAX_TRY + ' 次，请勿关闭本页）');
+            setTimeout(loadIdMap, ID_RETRY_MS);
+            return;
+          }
+          // 映射里没有，且显式带了 ?api= 后端地址 → 退回后端接口模式
+          if (apiBase) { fallbackBackend(); return; }
+          showError('⚠️ 该 id 不存在或视频已失效（map.json 中查无此 id，已重试 ' + ID_MAX_TRY + ' 次）');
+        })
+        .catch(function () {
+          if (idTries < ID_MAX_TRY) {
+            showError('⏳ 暂时取不到视频映射，正在重试 ' + idTries + '/' + ID_MAX_TRY + ' 次…');
+            setTimeout(loadIdMap, ID_RETRY_MS);
+            return;
+          }
+          showError('⚠️ 无法加载视频映射 map.json，请稍后重试');
+        });
+    }
+    loadIdMap();
   } else {
     // 静态模式：?url= / ?i= 直接播放
     if (!videoUrl) {
