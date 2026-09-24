@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>分享链接生成器</title>
+  <style>
+    body { margin: 0; padding: 24px; font: 14px/1.6 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; background: #0b1226; color: #e7ecf5; }
+    h1 { font-size: 18px; margin: 0 0 16px; }
+    label { display: block; margin: 14px 0 6px; color: #9fb0c9; }
+    input, textarea { width: 100%; box-sizing: border-box; padding: 10px 12px; border-radius: 8px; border: 1px solid #2a3a5c; background: #0f1830; color: #e7ecf5; font: 14px/1.5 monospace; }
+    textarea { height: 80px; resize: vertical; word-break: break-all; }
+    button { margin-top: 16px; padding: 10px 20px; border: none; border-radius: 8px; background: linear-gradient(135deg, #37e2ff, #2f7bff); color: #fff; font-weight: 600; cursor: pointer; }
+    .row { display: flex; gap: 12px; align-items: center; }
+    .row button { margin-top: 0; }
+    .ok { color: #34d399; }
+    code { color: #ffd93d; }
+  </style>
+</head>
+<body>
+  <h1>视频播放器 · 分享链接生成器</h1>
+
+  <label>① GitHub Pages 站点根地址</label>
+  <input id="base" placeholder="https://username.github.io/video-player" value="https://username.github.io/video-player">
+
+  <label>② 视频直链（mp4 / m3u8，需公网可访问）</label>
+  <input id="url" placeholder="https://liblibai-online.liblib.cloud/img/.../xxx.mp4">
+
+  <label>③ 标题（可选）</label>
+  <input id="title" placeholder="我的视频">
+
+  <div class="row">
+    <button id="gen">生成链接</button>
+    <button id="copy">复制</button>
+    <span id="msg"></span>
+  </div>
+
+  <label>生成的分享链接</label>
+  <textarea id="out" readonly></textarea>
+
+  <p style="color:#7e8aa3;margin-top:18px;">
+    说明：本播放器是纯静态页，视频地址通过 <code>?url=</code> 参数传入（自动 URL 编码）。<br>
+    还支持 <code>?title=</code> 标题、<code>?next=</code> 下一集、<code>?wm=</code> 水印、<code>?btn=名称|链接</code> 底部按钮、<code>?pbtn=名称|链接</code> 播放器内按钮。
+  </p>
+
+  <script>
+    function build() {
+      var base = document.getElementById('base').value.trim().replace(/\/+$/, '');
+      var url = document.getElementById('url').value.trim();
+      var title = document.getElementById('title').value.trim();
+      if (!base || !url) { document.getElementById('msg').textContent = '请填站点地址和视频直链'; return; }
+      var link = base + '/?url=' + encodeURIComponent(url);
+      if (title) link += '&title=' + encodeURIComponent(title);
+      document.getElementById('out').value = link;
+      document.getElementById('msg').textContent = '';
+    }
+    document.getElementById('gen').onclick = build;
+    document.getElementById('copy').onclick = function () {
+      var t = document.getElementById('out');
+      if (!t.value) { build(); }
+      t.select();
+      navigator.clipboard.writeText(t.value).then(function () {
+        document.getElementById('msg').innerHTML = '<span class="ok">已复制</span>';
+      }).catch(function () { document.execCommand('copy'); document.getElementById('msg').innerHTML = '<span class="ok">已复制</span>'; });
+    };
+  </script>
+</body>
+</html>
