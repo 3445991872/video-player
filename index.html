@@ -201,6 +201,8 @@
   var wmText   = getParam(['wm', 'watermark']) || '';
   var wmType   = (getParam(['wmt']) || 'static').toLowerCase(); // static | move
   var autoNext = qs.get('autonext') !== '0';
+  // 后台地址：?id= 优先向它取配置（读库 → 即时同步）；可用 ?sync= 覆盖
+  var SYNC_BASE = qs.get('sync') || 'https://video2.bw4.cn';
 
   // 自定义按钮：
   //   底部栏   btn=按钮名称|跳转链接   （可重复多个）
@@ -221,6 +223,7 @@
       buttons.push({ title: s.slice(0, i), url: s.slice(i + 1), pos: 'player' });
     }
   });
+  var queryButtons = buttons.slice();   // 由 ?btn=/?pbtn= 解析出来的按钮（重同步时作为基底，避免叠加重复）
 
   function showError(msg) {
     document.getElementById('err-msg').innerHTML = msg;
@@ -482,9 +485,9 @@
 
   /* ================= 入口 ================= */
   if (videoId) {
-    // 静态映射模式：?id=xxx → 读仓库根 map.json 查表播放（GitHub Pages 纯静态也能用）
-    // ⚠️ 刚上传时 GitHub Pages 可能在重建（约 30~120s），CDN 仍返回旧 map.json →
-    //    这里自动带 cache-bust 重试，边重试边提示「正在同步中」，避免用户误以为链接坏了。
+    // ?id= 模式取配置的优先级：
+    //   ① 向 video2 后台取（读数据库 → 后台改标题/按钮/跳转链接「即时生效」）
+    //   ② 后台不可用或没有这条 → 回落到仓库根 map.json（GitHub Pages 静态，有 30~120s 重建延迟，故带重试）
     var idTries = 0, ID_MAX_TRY = 15, ID_RETRY_MS = 8000;
     function hideErrOverlay() {
       var e = document.getElementById('err');
@@ -493,7 +496,7 @@
     function playFromEntry(entry) {
       videoUrl = entry.url;
       if (!title && entry.title) title = entry.title;
-      if (Array.isArray(entry.buttons)) buttons = buttons.concat(entry.buttons);
+      if (Array.isArray(entry.buttons)) buttons = queryButtons.concat(entry.buttons);
       if (entry.type) videoType = entry.type;
       if (entry.rawUrl && /^https?:\/\//i.test(entry.rawUrl)) rawDirect = entry.rawUrl;
       if (Array.isArray(entry.notice)) noticeLines = entry.notice;
@@ -528,33 +531,73 @@
           showError('⚠️ 无法连接播放接口，请稍后重试');
         });
     }
-    function loadIdMap() {
-      idTries++;
-      // cache-bust：绕过 GitHub Pages CDN 与浏览器缓存，确保取到最新 map.json
-      fetch('map.json?t=' + Date.now(), { cache: 'no-store' })
+    /* 向后台取某条视频配置（免鉴权公开接口，带 CORS，读库所以即时） */
+    function fetchServer() {
+      return fetch(SYNC_BASE + '/api/public/map/' + encodeURIComponent(videoId) + '?t=' + Date.now(), { cache: 'no-store' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (j) { return (j && j.code === 1 && j.data && j.data.url) ? j.data : null; })
+        .catch(function () { return null; });
+    }
+    function fetchMap() {
+      return fetch('map.json?t=' + Date.now(), { cache: 'no-store' })
         .then(function (r) { return r.ok ? r.json() : {}; })
-        .then(function (map) {
-          var entry = map && map[videoId];
-          if (entry && entry.url) { playFromEntry(entry); return; }
+        .catch(function () { return {}; });
+    }
+    /* 后台改了配置后，本页自动更新标题/按钮/免责声明，无需手动刷新 */
+    function applyUpdate(en) {
+      if (en.title) {
+        title = en.title;
+        var tb = document.getElementById('topbar');
+        if (tb) tb.textContent = title;
+        document.title = title;
+      }
+      buttons = queryButtons.concat(Array.isArray(en.buttons) ? en.buttons : []);
+      var ob = document.getElementById('btnbar'); if (ob) ob.remove();
+      var op = document.getElementById('pbtns'); if (op) op.remove();
+      renderButtons();
+      if (Array.isArray(en.notice)) { noticeLines = en.notice; renderNotice(noticeLines); }
+    }
+    function startResync(entry, fromServer) {
+      var lastSig = JSON.stringify(entry);
+      var timer = setInterval(function () {
+        var p = fromServer ? fetchServer() : fetchMap().then(function (m) { return m[videoId] || null; });
+        p.then(function (en) {
+          if (!en || !en.url) return;
+          var sig = JSON.stringify(en);
+          if (sig === lastSig) return;
+          lastSig = sig;
+          applyUpdate(en);
+        }).catch(function () { /* 忽略网络抖动 */ });
+      }, 10000);
+      setTimeout(function () { clearInterval(timer); }, 15 * 60 * 1000); // 15 分钟后停止轮询
+    }
+    function loadId() {
+      idTries++;
+      fetchServer().then(function (entry) {
+        if (entry) { playFromEntry(entry); startResync(entry, true); return; }
+        // 后台没有这条 / 后台不可用 → 回落 GitHub 静态 map.json
+        return fetchMap().then(function (map) {
+          var en = map && map[videoId];
+          if (en && en.url) { playFromEntry(en); startResync(en, false); return; }
           if (idTries < ID_MAX_TRY) {
             showError('⏳ 视频正在同步中…（刚上传时 GitHub 约需 1~2 分钟，已自动重试 ' + idTries + '/' + ID_MAX_TRY + ' 次，请勿关闭本页）');
-            setTimeout(loadIdMap, ID_RETRY_MS);
+            setTimeout(loadId, ID_RETRY_MS);
             return;
           }
-          // 映射里没有，且显式带了 ?api= 后端地址 → 退回后端接口模式
+          // 都没有，且显式带了 ?api= 后端地址 → 退回后端接口模式
           if (apiBase) { fallbackBackend(); return; }
-          showError('⚠️ 该 id 不存在或视频已失效（map.json 中查无此 id，已重试 ' + ID_MAX_TRY + ' 次）');
-        })
-        .catch(function () {
-          if (idTries < ID_MAX_TRY) {
-            showError('⏳ 暂时取不到视频映射，正在重试 ' + idTries + '/' + ID_MAX_TRY + ' 次…');
-            setTimeout(loadIdMap, ID_RETRY_MS);
-            return;
-          }
-          showError('⚠️ 无法加载视频映射 map.json，请稍后重试');
+          showError('⚠️ 该 id 不存在或视频已失效（已重试 ' + ID_MAX_TRY + ' 次）');
         });
+      }).catch(function () {
+        if (idTries < ID_MAX_TRY) {
+          showError('⏳ 暂时取不到视频信息，正在重试 ' + idTries + '/' + ID_MAX_TRY + ' 次…');
+          setTimeout(loadId, ID_RETRY_MS);
+          return;
+        }
+        showError('⚠️ 无法加载视频信息，请稍后重试');
+      });
     }
-    loadIdMap();
+    loadId();
   } else {
     // 静态模式：?url= / ?i= 直接播放
     if (!videoUrl) {
