@@ -189,7 +189,9 @@
     return t;
   }
 
-  var apiBase  = (getParam(['api']) || '').replace(/\/+$/, ''); // 后端地址（默认同域）
+  // 后端地址。github.io 是纯静态站，同域根本没有 /api/*，统计上报必须打到真实后端，
+  // 否则 track 请求全是 404 → 后台统计恒为 0（9/21 起失效的真正原因）。
+  var apiBase  = (getParam(['api']) || 'https://video2.bw4.cn').replace(/\/+$/, '');
   var videoId  = getParam(['id']);                               // 接口模式：视频 ID
   var shortId  = getParam(['i']);                               // Liblib 直链短码：owner/sha（省略固定前缀）
   var videoUrl = decodeUrl(getParam(['url', 'u', 'v']) || '');
