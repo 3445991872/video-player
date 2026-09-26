@@ -248,10 +248,7 @@
   function track(path, payload) {
     if (!videoId) return;
     try {
-      // ⚠️ 统计必须发到后台（video2）：apiBase 只有显式带 ?api= 时才有值，
-      // 而 GitHub 静态页的链接形如 ?id=<sha>，默认没有 ?api= —— 旧代码拼出
-      // '/api/track/...' 直接打到了 acvdio.github.io 自身（404），后台统计因此恒为 0。
-      var url = (apiBase || SYNC_BASE) + path;
+      var url = apiBase + path;
       var body = JSON.stringify(payload || {});
       if (navigator.sendBeacon) {
         var blob = new Blob([body], { type: 'application/json' });
